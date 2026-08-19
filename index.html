@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="theme-color" content="#000000" />
+<title>GeoSnap Camera</title>
+
+<!--
+  GeoSnap Camera — single-file app (React + Tailwind, no build step).
+  Requires a secure context (https:// or localhost) for Camera + Geolocation APIs to work.
+  Nothing here uploads, stores, or transmits the captured photo. The only network
+  request this app ever makes is an optional reverse-geocoding lookup of GPS coordinates.
+-->
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: { sans: ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'] },
+        colors: { amber: { 400: '#F5B94D', 500: '#F0A82B' } },
+      },
+    },
+  };
+</script>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
+
+<style>
+  html, body { height: 100%; margin: 0; background: #000; overscroll-behavior: none; }
+  body { font-family: 'Inter', system-ui, sans-serif; -webkit-tap-highlight-color: transparent; }
+  #root { height: 100dvh; width: 100%; }
+  * { box-sizing: border-box; }
+  video { -webkit-transform: translateZ(0); }
+
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes riseIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes flashOut { from { opacity: 0.9; } to { opacity: 0; } }
+  @keyframes pinPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+  .fade-in { animation: fadeIn 0.35s ease both; }
+  .rise-in { animation: riseIn 0.4s cubic-bezier(0.16,1,0.3,1) both; }
+  .flash { animation: flashOut 0.35s ease-out forwards; }
+  .pin-pulse { animation: pinPulse 1.4s ease-in-out infinite; }
+
+  .glass {
+    background: rgba(255,255,255,0.08);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255,255,255,0.12);
+  }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback } = React;
+
+/* ============================== ICONS ============================== */
+/* Hand-drawn, lucide-style stroke icons (24x24, currentColor, round caps) */
+
+const IconBase = ({ children, size = 24, className = "" }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    {children}
+  </svg>
+);
+
+const IconCameraGeo = (p) => (
+  <IconBase {...p}>
+    <path d="M4 8.5A2.5 2.5 0 0 1 6.5 6h1.6l1-1.6A1.5 1.5 0 0 1 10.4 3.6h3.2a1.5 1.5 0 0 1 1.3.8l1 1.6h1.6A2.5 2.5 0 0 1 20 8.5V17a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17Z" />
+    <circle cx="12" cy="12.5" r="3.4" />
+  </IconBase>
+);
+
+const IconMapPin = (p) => (
+  <IconBase {...p}>
+    <path d="M12 21s-6.75-5.6-6.75-11A6.75 6.75 0 1 1 18.75 10c0 5.4-6.75 11-6.75 11Z" />
+    <circle cx="12" cy="10" r="2.25" />
+  </IconBase>
+);
+
+const IconX = (p) => (
+  <IconBase {...p}><path d="M6 6l12 12M18 6L6 18" /></IconBase>
+);
+
+const IconSwitchCamera = (p) => (
+  <IconBase {...p}>
+    <path d="M4 7h3l1.2-1.8A1.6 1.6 0 0 1 9.5 4.5h5a1.6 1.6 0 0 1 1.3.7L17 7h3a1.6 1.6 0 0 1 1.6 1.6V17A1.6 1.6 0 0 1 20 18.6H4A1.6 1.6 0 0 1 2.4 17V8.6A1.6 1.6 0 0 1 4 7Z" />
+    <path d="M9 11.5a3 3 0 0 1 5.2-2.05M15 13.5a3 3 0 0 1-5.2 2.05" />
+    <path d="M14 9l1.4.2-.2-1.4M10 16l-1.4-.2.2 1.4" />
+  </IconBase>
+);
+
+const IconRefreshCcw = (p) => (
+  <IconBase {...p}>
+    <path d="M3 12a9 9 0 0 1 15.4-6.36L21 8" />
+    <path d="M21 3v5h-5" />
+    <path d="M21 12a9 9 0 0 1-15.4 6.36L3 16" />
+    <path d="M3 21v-5h5" />
+  </IconBase>
+);
+
+const IconDownload = (p) => (
+  <IconBase {...p}>
+    <path d="M12 3v12" />
+    <path d="M7 10l5 5 5-5" />
+    <path d="M4 19.5h16" />
+  </IconBase>
+);
+
+const IconAlertTriangle = (p) => (
+  <IconBase {...p}>
+    <path d="M10.6 3.9 2.3 18a1.6 1.6 0 0 0 1.4 2.4h16.6a1.6 1.6 0 0 0 1.4-2.4L13.4 3.9a1.6 1.6 0 0 0-2.8 0Z" />
+    <path d="M12 9.5v4.2" />
+    <circle cx="12" cy="16.7" r="0.15" fill="currentColor" stroke="currentColor" />
+  </IconBase>
+);
+
+const IconLoader = (p) => (
+  <IconBase {...p} className={`animate-spin ${p.className || ""}`}>
+    <path d="M12 3v3" /><path d="M12 18v3" />
+    <path d="M4.9 4.9l2.1 2.1" /><path d="M17 17l2.1 2.1" />
+    <path d="M3 12h3" /><path d="M18 12h3" />
+    <path d="M4.9 19.1l2.1-2.1" /><path d="M17 7l2.1-2.1" />
+  </IconBase>
+);
+
+const IconLock = (p) => (
+  <IconBase {...p}>
+    <rect x="5" y="10.5" width="14" height="9" rx="2" />
+    <path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" />
+  </IconBase>
+);
+
+/* ============================== UTILITIES ============================== */
+
+const pad2 = (n) => String(n).padStart(2, "0");
+
+function formatDateTime(date) {
+  const weekday = date.toLocaleDateString("en-US", { weekday: "long" });
+  const dd = pad2(date.getDate());
+  const mm = pad2(date.getMonth() + 1);
+  const yyyy = date.getFullYear();
+  let hours = date.getHours();
+  const ampm = hours >= 12 ? "PM" : "AM";
+  hours = hours % 12; if (hours === 0) hours = 12;
+  const hh = pad2(hours);
+  const min = pad2(date.getMinutes());
+  const offsetMin = -date.getTimezoneOffset();
+  const sign = offsetMin >= 0 ? "+" : "-";
+  const offH = pad2(Math.floor(Math.abs(offsetMin) / 60));
+  const offM = pad2(Math.abs(offsetMin) % 60);
+  return `${weekday}, ${dd}/${mm}/${yyyy} ${hh}:${min} ${ampm} GMT ${sign}${offH}:${offM}`;
+}
+
+function filenameTimestamp(date) {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}_${pad2(date.getHours())}-${pad2(date.getMinutes())}-${pad2(date.getSeconds())}`;
+}
+
+function formatCoords(lat, lng) {
+  return `Lat ${lat.toFixed(6)}\u00B0  Long ${lng.toFixed(6)}\u00B0`;
+}
+
+function flagEmoji(countryCode) {
+  if (!countryCode || countryCode.length !== 2) return "";
+  const cc = countryCode.toUpperCase();
+  try {
+    const points = [...cc].map((c) => 0x1f1e6 + (c.charCodeAt(0) - 65));
+    return String.fromCodePoint(...points);
+  } catch (e) { return ""; }
+}
+
+// Reverse-geocode isolated in its own function. Only coordinates are sent — never the photo.
+async function reverseGeocode(lat, lng, signal) {
+  const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=16&addressdetails=1`;
+  const res = await fetch(url, { headers: { "Accept-Language": "en" }, signal });
+  if (!res.ok) throw new Error("geocode-http-error");
+  const data = await res.json();
+  if (!data || data.error) throw new Error("geocode-empty");
+  return data;
+}
+
+function buildLocationInfo(geo) {
+  if (!geo || !geo.address) return null;
+  const a = geo.address;
+  const city = a.city || a.town || a.village || a.suburb || a.county || a.state_district || "";
+  const state = a.state || a.region || "";
+  const country = a.country || "";
+  const countryCode = a.country_code || "";
+  const primary = [city, state, country].filter(Boolean).join(", ");
+  const full = geo.display_name || primary;
+  return { primary: primary || "Location unavailable", full, country, countryCode };
+}
+
+function wrapCanvasText(ctx, text, maxWidth, maxLines) {
+  if (!text) return [];
+  const words = text.split(/\s+/);
+  const lines = [];
+  let current = "";
+  for (const word of words) {
+    const test = current ? current + " " + word : word;
+    if (ctx.measureText(test).width > maxWidth && current) {
+      lines.push(current);
+      current = word;
+      if (lines.length === maxLines) break;
+    } else {
+      current = test;
+    }
+  }
+  if (lines.length < maxLines && current) lines.push(current);
+
+  if (lines.length >= maxLines) {
+    lines.length = Math.min(lines.length, maxLines);
+    const consumed = lines.join(" ").length;
+    if (consumed < text.length) {
+      let last = lines[maxLines - 1] || "";
+      while (last.length > 0 && ctx.measureText(last + "\u2026").width > maxWidth) {
+        last = last.slice(0, -1);
+      }
+      lines[maxLines - 1] = last.trimEnd() + "\u2026";
+    }
+  }
+  return lines;
+}
+
+// Draws the geotag watermark directly into the photo's pixels.
+function drawWatermark(ctx, width, height, meta) {
+  const scale = Math.min(2.4, Math.max(0.55, width / 1080));
+  const pad = Math.max(16, Math.round(26 * scale));
+  const titleSize = Math.max(17, Math.round(31 * scale));
+  const addrSize = Math.max(13, Math.round(20 * scale));
+  const smallSize = Math.max(12, Math.round(18 * scale));
+  const lineGap = Math.max(4, Math.round(9 * scale));
+  const maxTextWidth = width - pad * 2;
+
+  const fontStack = `"Inter", -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif`;
+
+  const hasLocation = !!meta.hasLocation;
+  const prefix = hasLocation ? "\uD83D\uDCCD " : "\u26A0\uFE0F ";
+  const titleText = prefix + (hasLocation ? (meta.primaryText || "Location unavailable") : "Location unavailable") + (meta.flag ? " " + meta.flag : "");
+
+  const lines = [{ text: titleText, size: titleSize, weight: 800, color: "255,255,255", opacity: 1 }];
+
+  if (hasLocation && meta.fullAddressText && meta.fullAddressText !== meta.primaryText) {
+    ctx.font = `400 ${addrSize}px ${fontStack}`;
+    const wrapped = wrapCanvasText(ctx, meta.fullAddressText, maxTextWidth, 2);
+    wrapped.forEach((t) => lines.push({ text: t, size: addrSize, weight: 400, color: "230,230,230", opacity: 0.88 }));
+  }
+  if (hasLocation && meta.coordsText) {
+    lines.push({ text: meta.coordsText, size: smallSize, weight: 600, color: "255,255,255", opacity: 0.82 });
+  }
+  lines.push({ text: meta.dateTimeText, size: smallSize, weight: 400, color: "255,255,255", opacity: 0.78 });
+
+  let contentHeight = 0;
+  lines.forEach((l, i) => { contentHeight += Math.round(l.size * 1.32); if (i < lines.length - 1) contentHeight += lineGap; });
+  const panelHeight = Math.min(height * 0.42, contentHeight + pad * 2);
+  const fadeHeight = panelHeight * 0.55;
+  const panelTop = height - panelHeight;
+
+  const grad = ctx.createLinearGradient(0, panelTop - fadeHeight, 0, panelTop);
+  grad.addColorStop(0, "rgba(0,0,0,0)");
+  grad.addColorStop(1, "rgba(0,0,0,0.5)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, panelTop - fadeHeight, width, fadeHeight);
+
+  ctx.fillStyle = "rgba(0,0,0,0.52)";
+  ctx.fillRect(0, panelTop, width, panelHeight);
+
+  ctx.fillStyle = "rgba(255,255,255,0.14)";
+  ctx.fillRect(0, panelTop, width, Math.max(1, Math.round(scale)));
+
+  let y = panelTop + pad + lines[0].size * 0.92;
+  ctx.textBaseline = "alphabetic";
+  lines.forEach((l, i) => {
+    ctx.font = `${l.weight} ${l.size}px ${fontStack}`;
+    ctx.fillStyle = `rgba(${l.color},${l.opacity})`;
+    ctx.fillText(l.text, pad, y, maxTextWidth);
+    if (i < lines.length - 1) y += Math.round(l.size * 1.32) + lineGap;
+  });
+}
+
+async function ensureFontsReady() {
+  try {
+    if (document.fonts && document.fonts.ready) {
+      await Promise.all([
+        document.fonts.load('400 20px "Inter"'),
+        document.fonts.load('600 20px "Inter"'),
+        document.fonts.load('800 20px "Inter"'),
+      ]);
+      await document.fonts.ready;
+    }
+  } catch (e) { /* proceed with fallback fonts */ }
+}
+
+/* ============================== SUBCOMPONENTS ============================== */
+
+function LocationBadge({ status }) {
+  const map = {
+    idle: { text: "Location off", tone: "text-white/60" },
+    loading: { text: "Getting location\u2026", tone: "text-white" },
+    ready: { text: "Location ready", tone: "text-amber-400" },
+    denied: { text: "Location unavailable", tone: "text-white/70" },
+    unavailable: { text: "Location unavailable", tone: "text-white/70" },
+  };
+  const s = map[status] || map.idle;
+  return (
+    <div className="glass rounded-full px-3.5 py-2 flex items-center gap-1.5 max-w-[220px]">
+      {status === "loading" ? (
+        <IconLoader size={15} className="text-white shrink-0" />
+      ) : (
+        <IconMapPin size={15} className={`${s.tone} shrink-0 ${status === "ready" ? "" : "pin-pulse"}`} />
+      )}
+      <span className={`text-[12.5px] font-medium ${s.tone} truncate`}>{s.text}</span>
+    </div>
+  );
+}
+
+function PermissionScreen({ onEnable, isRequesting, denialNote }) {
+  return (
+    <div className="h-full w-full flex flex-col items-center justify-center px-8 text-center fade-in bg-gradient-to-b from-neutral-950 via-black to-neutral-950">
+      <div className="w-20 h-20 rounded-3xl glass flex items-center justify-center mb-7">
+        <IconCameraGeo size={38} className="text-amber-400" />
+      </div>
+      <h1 className="text-white text-[26px] font-extrabold tracking-tight">GeoSnap Camera</h1>
+      <p className="text-white/55 text-[15px] mt-2.5 leading-relaxed max-w-[280px]">
+        Capture photos with location, coordinates and time.
+      </p>
+
+      {denialNote && (
+        <div className="mt-5 flex items-center gap-2 text-red-300/90 bg-red-500/10 border border-red-500/20 rounded-xl px-3.5 py-2.5 text-[13px] max-w-[300px]">
+          <IconAlertTriangle size={16} className="shrink-0" />
+          <span>{denialNote}</span>
+        </div>
+      )}
+
+      <button
+        onClick={onEnable}
+        disabled={isRequesting}
+        className="mt-9 w-full max-w-[300px] bg-white text-black font-semibold text-[15.5px] rounded-full py-4 flex items-center justify-center gap-2 active:scale-[0.97] transition-transform disabled:opacity-70"
+      >
+        {isRequesting ? <IconLoader size={18} /> : <IconCameraGeo size={18} />}
+        {isRequesting ? "Requesting access\u2026" : "Enable Camera & Location"}
+      </button>
+
+      <div className="mt-6 flex items-center gap-1.5 text-white/40 text-[12px] max-w-[290px] leading-snug">
+        <IconLock size={13} className="shrink-0 mt-[1px]" />
+        <span>Your photo is processed directly on your device and isn't uploaded to our servers.</span>
+      </div>
+    </div>
+  );
+}
+
+function CameraScreen({ videoRef, locationStatus, isProcessing, flash, onCapture, onSwitchCamera, onExit, disableCapture }) {
+  return (
+    <div className="relative h-full w-full bg-black fade-in overflow-hidden">
+      <video ref={videoRef} playsInline muted autoPlay className="absolute inset-0 h-full w-full object-cover" />
+
+      <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-transparent to-black/70 pointer-events-none" />
+
+      {flash && <div className="absolute inset-0 bg-white flash pointer-events-none" />}
+
+      <div className="absolute top-0 left-0 right-0 pt-[max(14px,env(safe-area-inset-top))] px-4 flex items-center justify-between">
+        <button onClick={onExit} className="glass w-10 h-10 rounded-full flex items-center justify-center text-white active:scale-90 transition-transform">
+          <IconX size={19} />
+        </button>
+        <LocationBadge status={locationStatus} />
+      </div>
+
+      {isProcessing && (
+        <div className="absolute inset-0 bg-black/45 flex flex-col items-center justify-center gap-3 fade-in">
+          <div className="glass rounded-2xl px-5 py-4 flex items-center gap-3">
+            <IconLoader size={20} className="text-amber-400" />
+            <span className="text-white text-[14.5px] font-medium">{"Processing photo\u2026"}</span>
+          </div>
+        </div>
+      )}
+
+      <div className="absolute bottom-0 left-0 right-0 pb-[max(22px,env(safe-area-inset-bottom))] pt-6 px-8 flex items-center justify-between">
+        <button
+          onClick={onSwitchCamera}
+          disabled={isProcessing}
+          className="glass w-12 h-12 rounded-full flex items-center justify-center text-white active:scale-90 transition-transform disabled:opacity-40"
+        >
+          <IconSwitchCamera size={20} />
+        </button>
+
+        <button
+          onClick={onCapture}
+          disabled={disableCapture || isProcessing}
+          aria-label="Capture photo"
+          className="relative w-[76px] h-[76px] rounded-full border-[3.5px] border-white flex items-center justify-center active:scale-90 transition-transform disabled:opacity-50"
+        >
+          <span className="w-[62px] h-[62px] rounded-full bg-white" />
+        </button>
+
+        <span className="w-12 h-12" />
+      </div>
+    </div>
+  );
+}
+
+function PreviewScreen({ photo, onRetake, onSave, isSaving, saveError }) {
+  return (
+    <div className="relative h-full w-full bg-black flex flex-col fade-in">
+      <div className="flex-1 min-h-0 flex items-center justify-center bg-black overflow-hidden">
+        <img src={photo.dataUrl} alt="Captured" className="max-h-full max-w-full object-contain" />
+      </div>
+
+      <div className="pb-[max(22px,env(safe-area-inset-bottom))] pt-4 px-5 bg-black rise-in">
+        {saveError && (
+          <div className="mb-3 text-red-300 text-[12.5px] text-center bg-red-500/10 border border-red-500/20 rounded-lg py-2 px-3">
+            {saveError}
+          </div>
+        )}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={onRetake}
+            className="flex-1 flex items-center justify-center gap-2 rounded-full py-4 font-semibold text-[15px] text-white glass active:scale-[0.97] transition-transform"
+          >
+            <IconRefreshCcw size={17} />
+            Retake
+          </button>
+          <button
+            onClick={onSave}
+            disabled={isSaving}
+            className="flex-1 flex items-center justify-center gap-2 rounded-full py-4 font-semibold text-[15px] text-black bg-amber-400 active:scale-[0.97] transition-transform disabled:opacity-70"
+          >
+            {isSaving ? <IconLoader size={17} /> : <IconDownload size={17} />}
+            {isSaving ? "Saving\u2026" : "Save to Phone"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ErrorScreen({ title, message, onRetry }) {
+  return (
+    <div className="h-full w-full flex flex-col items-center justify-center px-8 text-center fade-in bg-black">
+      <div className="w-16 h-16 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mb-6">
+        <IconAlertTriangle size={30} className="text-red-400" />
+      </div>
+      <h2 className="text-white text-[19px] font-bold">{title}</h2>
+      <p className="text-white/55 text-[14.5px] mt-2 leading-relaxed max-w-[280px]">{message}</p>
+      <button
+        onClick={onRetry}
+        className="mt-8 w-full max-w-[260px] bg-white text-black font-semibold text-[15px] rounded-full py-3.5 active:scale-[0.97] transition-transform"
+      >
+        Try Again
+      </button>
+    </div>
+  );
+}
+
+/* ============================== APP ============================== */
+
+function App() {
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const abortRef = useRef(null);
+
+  const [appState, setAppState] = useState("permission"); // permission | camera | processing | preview | error
+  const [isRequesting, setIsRequesting] = useState(false);
+  const [cameraFacing, setCameraFacing] = useState("environment");
+  const [permissionDenialNote, setPermissionDenialNote] = useState(null);
+
+  const [locationStatus, setLocationStatus] = useState("idle"); // idle | loading | ready | denied | unavailable
+  const [location, setLocation] = useState(null);
+  const [geo, setGeo] = useState(null);
+
+  const [capturedPhoto, setCapturedPhoto] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
+  const [flash, setFlash] = useState(false);
+  const [errorInfo, setErrorInfo] = useState(null);
+
+  const stopCameraTracks = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) videoRef.current.srcObject = null;
+  }, []);
+
+  useEffect(() => () => { stopCameraTracks(); if (abortRef.current) abortRef.current.abort(); }, [stopCameraTracks]);
+
+  function describeCameraError(err) {
+    const name = err && err.name;
+    if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+      return { title: "Camera access is required", message: "Please allow camera access in your browser settings and try again." };
+    }
+    if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+      return { title: "No camera found", message: "We couldn't detect a camera on this device." };
+    }
+    if (name === "NotReadableError" || name === "TrackStartError") {
+      return { title: "Camera unavailable", message: "Your camera might be in use by another app. Close it and try again." };
+    }
+    if (name === "NotSupportedError" || name === "unsupported") {
+      return { title: "Unsupported browser", message: "This browser doesn't support camera access. Try the latest Chrome or Safari." };
+    }
+    return { title: "Camera error", message: "Something went wrong starting the camera. Please try again." };
+  }
+
+  const startCamera = useCallback(async (facing) => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      const e = describeCameraError({ name: "unsupported" });
+      setErrorInfo({ ...e, onRetry: () => setAppState("permission") });
+      setAppState("error");
+      return false;
+    }
+    stopCameraTracks();
+    try {
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: facing } },
+          audio: false,
+        });
+      } catch (err) {
+        if (err && err.name === "OverconstrainedError") {
+          stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        } else {
+          throw err;
+        }
+      }
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play().catch(() => {});
+      }
+      setCameraFacing(facing);
+      return true;
+    } catch (err) {
+      const e = describeCameraError(err);
+      setErrorInfo({ ...e, onRetry: () => { setAppState("permission"); } });
+      setAppState("error");
+      return false;
+    }
+  }, [stopCameraTracks]);
+
+  const requestLocation = useCallback(() => {
+    setLocationStatus("loading");
+    if (!navigator.geolocation) {
+      setLocationStatus("unavailable");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy, timestamp: pos.timestamp };
+        setLocation(loc);
+        setLocationStatus("ready");
+        fetchAddress(loc.lat, loc.lng);
+      },
+      (err) => {
+        setLocationStatus(err && err.code === 1 ? "denied" : "unavailable");
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    );
+  }, []);
+
+  async function fetchAddress(lat, lng) {
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    try {
+      const data = await reverseGeocode(lat, lng, controller.signal);
+      setGeo(buildLocationInfo(data));
+    } catch (e) {
+      setGeo(null); // silently fall back — lat/lng still shown, per spec
+    }
+  }
+
+  async function handleEnable() {
+    setPermissionDenialNote(null);
+    setIsRequesting(true);
+    const ok = await startCamera("environment");
+    if (ok) {
+      setAppState("camera");
+      requestLocation();
+    }
+    setIsRequesting(false);
+  }
+
+  async function handleSwitchCamera() {
+    const next = cameraFacing === "environment" ? "user" : "environment";
+    await startCamera(next);
+  }
+
+  function handleExit() {
+    stopCameraTracks();
+    setCapturedPhoto(null);
+    setLocation(null);
+    setGeo(null);
+    setLocationStatus("idle");
+    setPermissionDenialNote(null);
+    setAppState("permission");
+  }
+
+  const capturePhoto = useCallback(async () => {
+    const video = videoRef.current;
+    if (!video || !video.videoWidth) return;
+    setAppState("processing");
+    setFlash(true);
+    setTimeout(() => setFlash(false), 250);
+
+    try {
+      await ensureFontsReady();
+      const vw = video.videoWidth, vh = video.videoHeight;
+      const canvas = document.createElement("canvas");
+      canvas.width = vw;
+      canvas.height = vh;
+      const ctx = canvas.getContext("2d");
+
+      if (cameraFacing === "user") {
+        ctx.translate(vw, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.drawImage(video, 0, 0, vw, vh);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+      const now = new Date();
+      const meta = {
+        hasLocation: !!location,
+        primaryText: geo ? geo.primary : null,
+        fullAddressText: geo ? geo.full : null,
+        flag: geo && geo.countryCode ? flagEmoji(geo.countryCode) : "",
+        coordsText: location ? formatCoords(location.lat, location.lng) : null,
+        dateTimeText: formatDateTime(now),
+      };
+      drawWatermark(ctx, vw, vh, meta);
+
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+      canvas.toBlob((blob) => {
+        stopCameraTracks();
+        setCapturedPhoto({ dataUrl, blob, timestamp: now });
+        setAppState("preview");
+      }, "image/jpeg", 0.92);
+    } catch (err) {
+      setErrorInfo({
+        title: "Capture failed",
+        message: "Something went wrong while processing your photo. Please try again.",
+        onRetry: async () => { setAppState("camera"); await startCamera(cameraFacing); },
+      });
+      setAppState("error");
+    }
+  }, [cameraFacing, location, geo, stopCameraTracks, startCamera]);
+
+  async function handleRetake() {
+    setCapturedPhoto(null);
+    setSaveError(null);
+    setAppState("camera");
+    await startCamera(cameraFacing);
+  }
+
+  async function handleSave() {
+    if (!capturedPhoto) return;
+    setSaveError(null);
+    setIsSaving(true);
+    try {
+      const url = URL.createObjectURL(capturedPhoto.blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `geosnap_${filenameTimestamp(capturedPhoto.timestamp)}.jpg`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+    } catch (err) {
+      setSaveError("Download failed. Please try again.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <div className="h-[100dvh] w-full bg-neutral-950 flex items-center justify-center md:p-6">
+      <div className="relative h-[100dvh] w-full max-w-[480px] bg-black overflow-hidden md:h-[92dvh] md:max-h-[900px] md:rounded-[2.25rem] md:border md:border-white/10 md:shadow-2xl">
+        {appState === "permission" && (
+          <PermissionScreen onEnable={handleEnable} isRequesting={isRequesting} denialNote={permissionDenialNote} />
+        )}
+
+        {(appState === "camera" || appState === "processing") && (
+          <CameraScreen
+            videoRef={videoRef}
+            locationStatus={locationStatus}
+            isProcessing={appState === "processing"}
+            flash={flash}
+            onCapture={capturePhoto}
+            onSwitchCamera={handleSwitchCamera}
+            onExit={handleExit}
+            disableCapture={false}
+          />
+        )}
+
+        {appState === "preview" && capturedPhoto && (
+          <PreviewScreen photo={capturedPhoto} onRetake={handleRetake} onSave={handleSave} isSaving={isSaving} saveError={saveError} />
+        )}
+
+        {appState === "error" && errorInfo && (
+          <ErrorScreen title={errorInfo.title} message={errorInfo.message} onRetry={errorInfo.onRetry} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
