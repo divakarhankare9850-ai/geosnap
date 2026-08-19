@@ -61,7 +61,7 @@
 <body>
 <div id="root"></div>
 
-<script type="text/babel" data-presets="react">
+<script type="text/babel" data-presets="react,env">
 const { useState, useEffect, useRef, useCallback } = React;
 
 /* ============================== ICONS ============================== */
@@ -246,7 +246,10 @@ function drawWatermark(ctx, width, height, meta) {
 
   const hasLocation = !!meta.hasLocation;
   const prefix = hasLocation ? "\uD83D\uDCCD " : "\u26A0\uFE0F ";
-  const titleText = prefix + (hasLocation ? (meta.primaryText || "Location unavailable") : "Location unavailable") + (meta.flag ? " " + meta.flag : "");
+  const rawTitle = prefix + (hasLocation ? (meta.primaryText || "Location unavailable") : "Location unavailable") + (meta.flag ? " " + meta.flag : "");
+
+  ctx.font = `800 ${titleSize}px ${fontStack}`;
+  const titleText = (wrapCanvasText(ctx, rawTitle, maxTextWidth, 1)[0]) || rawTitle;
 
   const lines = [{ text: titleText, size: titleSize, weight: 800, color: "255,255,255", opacity: 1 }];
 
@@ -283,7 +286,7 @@ function drawWatermark(ctx, width, height, meta) {
   lines.forEach((l, i) => {
     ctx.font = `${l.weight} ${l.size}px ${fontStack}`;
     ctx.fillStyle = `rgba(${l.color},${l.opacity})`;
-    ctx.fillText(l.text, pad, y, maxTextWidth);
+    ctx.fillText(l.text, pad, y);
     if (i < lines.length - 1) y += Math.round(l.size * 1.32) + lineGap;
   });
 }
@@ -359,11 +362,9 @@ function PermissionScreen({ onEnable, isRequesting, denialNote }) {
   );
 }
 
-function CameraScreen({ videoRef, locationStatus, isProcessing, flash, onCapture, onSwitchCamera, onExit, disableCapture }) {
+function CameraChrome({ locationStatus, isProcessing, flash, onCapture, onSwitchCamera, onExit, disableCapture }) {
   return (
-    <div className="relative h-full w-full bg-black fade-in overflow-hidden">
-      <video ref={videoRef} playsInline muted autoPlay className="absolute inset-0 h-full w-full object-cover" />
-
+    <div className="relative h-full w-full fade-in overflow-hidden">
       <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-transparent to-black/70 pointer-events-none" />
 
       {flash && <div className="absolute inset-0 bg-white flash pointer-events-none" />}
@@ -681,33 +682,47 @@ function App() {
     }
   }
 
+  const showVideo = appState === "camera" || appState === "processing";
+
   return (
     <div className="h-[100dvh] w-full bg-neutral-950 flex items-center justify-center md:p-6">
       <div className="relative h-[100dvh] w-full max-w-[480px] bg-black overflow-hidden md:h-[92dvh] md:max-h-[900px] md:rounded-[2.25rem] md:border md:border-white/10 md:shadow-2xl">
-        {appState === "permission" && (
-          <PermissionScreen onEnable={handleEnable} isRequesting={isRequesting} denialNote={permissionDenialNote} />
-        )}
+        {/* Video is always mounted so videoRef.current is available the instant a stream is
+            ready, regardless of which screen is currently showing. Visibility is toggled with
+            CSS rather than mounting/unmounting, which avoids a ref-timing race. */}
+        <video
+          ref={videoRef}
+          playsInline
+          muted
+          autoPlay
+          className={`absolute inset-0 h-full w-full object-cover z-0 ${showVideo ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        />
 
-        {(appState === "camera" || appState === "processing") && (
-          <CameraScreen
-            videoRef={videoRef}
-            locationStatus={locationStatus}
-            isProcessing={appState === "processing"}
-            flash={flash}
-            onCapture={capturePhoto}
-            onSwitchCamera={handleSwitchCamera}
-            onExit={handleExit}
-            disableCapture={false}
-          />
-        )}
+        <div className="relative z-10 h-full w-full">
+          {appState === "permission" && (
+            <PermissionScreen onEnable={handleEnable} isRequesting={isRequesting} denialNote={permissionDenialNote} />
+          )}
 
-        {appState === "preview" && capturedPhoto && (
-          <PreviewScreen photo={capturedPhoto} onRetake={handleRetake} onSave={handleSave} isSaving={isSaving} saveError={saveError} />
-        )}
+          {showVideo && (
+            <CameraChrome
+              locationStatus={locationStatus}
+              isProcessing={appState === "processing"}
+              flash={flash}
+              onCapture={capturePhoto}
+              onSwitchCamera={handleSwitchCamera}
+              onExit={handleExit}
+              disableCapture={false}
+            />
+          )}
 
-        {appState === "error" && errorInfo && (
-          <ErrorScreen title={errorInfo.title} message={errorInfo.message} onRetry={errorInfo.onRetry} />
-        )}
+          {appState === "preview" && capturedPhoto && (
+            <PreviewScreen photo={capturedPhoto} onRetake={handleRetake} onSave={handleSave} isSaving={isSaving} saveError={saveError} />
+          )}
+
+          {appState === "error" && errorInfo && (
+            <ErrorScreen title={errorInfo.title} message={errorInfo.message} onRetry={errorInfo.onRetry} />
+          )}
+        </div>
       </div>
     </div>
   );
