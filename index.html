@@ -793,15 +793,48 @@ function App() {
       return Promise.resolve(false);
     }
     stopCameraTracks();
-    return navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: facing } }, audio: false })
+    // Request the highest resolution the device's camera actually supports.
+    // Without explicit width/height constraints, browsers often default to a
+    // low-res stream (e.g. 640x480) regardless of the phone's real camera quality.
+    var highResConstraints = {
+      video: {
+        facingMode: { ideal: facing },
+        width: { ideal: 4096 },
+        height: { ideal: 2160 },
+        advanced: [{ width: { min: 1920 }, height: { min: 1080 } }]
+      },
+      audio: false
+    };
+    return navigator.mediaDevices.getUserMedia(highResConstraints)
       .catch(function (err) {
         if (err && err.name === "OverconstrainedError") {
-          return navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+          // Fall back progressively if the device rejects the high-res ask.
+          return navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: facing }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+            audio: false
+          }).catch(function () {
+            return navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+          });
         }
         throw err;
       })
       .then(function (stream) {
         streamRef.current = stream;
+        // Ask the track to push toward its max native resolution/quality if it can.
+        try {
+          var track = stream.getVideoTracks()[0];
+          if (track && track.getCapabilities) {
+            var caps = track.getCapabilities();
+            var applyConstraints = {};
+            if (caps.width && caps.width.max) applyConstraints.width = { ideal: caps.width.max };
+            if (caps.height && caps.height.max) applyConstraints.height = { ideal: caps.height.max };
+            if (caps.focusMode && caps.focusMode.indexOf("continuous") !== -1) applyConstraints.focusMode = "continuous";
+            if (Object.keys(applyConstraints).length) {
+              track.applyConstraints({ advanced: [applyConstraints] }).catch(function () {});
+            }
+          }
+        } catch (e) { /* capability probing not supported — ignore */ }
+
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           return videoRef.current.play().catch(function () {}).then(function () {
@@ -911,12 +944,12 @@ function App() {
         };
         drawWatermark(ctx, vw, vh, meta);
 
-        var dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+        var dataUrl = canvas.toDataURL("image/jpeg", 0.97);
         canvas.toBlob(function (blob) {
           stopCameraTracks();
           setCapturedPhoto({ dataUrl: dataUrl, blob: blob, timestamp: now });
           setAppState("preview");
-        }, "image/jpeg", 0.92);
+        }, "image/jpeg", 0.97);
       } catch (err) {
         setErrorInfo({
           title: "Capture failed",
